@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import json
+import numpy as np
+import networkx as nx
 
 from matplotlib.offsetbox import  OffsetImage
 from matplotlib.patches import Circle, Rectangle, Arc
@@ -219,3 +221,122 @@ def AnotacionesJugador(p_id, season, gametype):
     ax.add_artist(img)
 
     plt.show()
+
+    
+    
+def draw_network_all(team,season,game_type,df_involvement,df_pairs,size=(9,8), lw=2.5, seed=None, k=None, lc='black'):
+    """
+    Función para dibujar gráficas de redes y calcular las medidas de centralidad para sus jugadores
+
+    Función que grafica las gráficas de interacciones entre jugadores en jugadas de anotación. Filtra los datos acorde a los parámetros de equipo, temporada y tipo de juego que recibe. Devuelve además un dataframe con las medidas de cenralidad para los jugadores de ese equipo.
+    
+    Parameters
+    ----------
+    team : str
+        Clave del equipo de interés (p.ej. 'CLE')
+    season : str
+        Temporada (p. ej. '2016-2017')
+    game_type : str
+        Tipo de juego ('regular' o 'playoff')
+    df_involvement: dataframe
+        Dataframe con jugadores y su colaboración en anotaciones
+    df_pairs: dataframe
+        Pares de jugadores que intervienen en una jugada de anotación
+
+    Returns
+    -------
+    dataframe
+        Valores de centralidad para el equipo, temporada y tipo de juego indicados en los parámetros
+
+    """
+    df_inv = df_involvement
+    df_shots = df_pairs
+    
+    temporada_inv = df_inv['season'] == season
+    df_inv = df_inv[temporada_inv]
+    tipo_juego_inv = df_inv['gametype'] == game_type
+    df_inv = df_inv[tipo_juego_inv]
+    equipo_inv = df_inv['team'] == team
+    df_inv = df_inv[equipo_inv]
+    
+    temporada_shot = df_shots['season'] == season
+    df_shots = df_shots[temporada_shot]
+    tipo_juego_shot = df_shots['gametype'] == game_type
+    df_shots = df_shots[tipo_juego_shot]
+    equipo_shot = df_shots['team'] == team
+    df_shots = df_shots[equipo_shot]
+    
+    unique_teams = list(df_inv['team'].unique())
+    networks = {}
+    #Creo nodos
+    for i in unique_teams:
+        networks[i] = nx.Graph()
+        players = list(df_inv.loc[df_inv['team']==i, 'player'])
+        for player in players:
+            networks[i].add_node(player)
+    #Creo aristas
+    for row in df_shots.itertuples():
+        #Get the team and partnership in question
+        team = row.team
+        player1 = row.shooter
+        player2 = row.assister
+        shots = row.count
+
+        #Find the appropriate graph and add the weight
+        networks[team].add_edge(player1, player2, weight=shots)
+    
+    #Get the network and remove isolated nodes
+    G = networks[team]
+    G.remove_nodes_from(list(nx.isolates(G)))
+    
+    #Get the team color for the nodes
+    #ncolor = df_pairs.loc[df_pairs['team']==team,'TeamColor'].item()
+    ncolor = nba_color_codes[team] 
+    
+    #Calculate the node sizes and the edge weights
+    sizes = np.array([df_inv.loc[df_inv['player'] == i,['shot_involvement']].iloc[0].item()
+                  for i in G.nodes]) *10 #0 
+    #weights = [(G[u][v]['weight']**1.5)*(lw/10) for u,v in G.edges()]
+    weights = [(G[u][v]['weight'])*(lw/10) for u,v in G.edges()]
+    
+    #Draw the plot
+    plt.figure(figsize=size)
+    nx.draw(G,
+            pos=nx.spring_layout(G, k=5.4),
+            with_labels=True,
+            node_size=sizes,
+            node_color=ncolor,
+            width=weights,
+            font_weight="bold",
+            font_color=lc,
+            alpha=.9,
+            edge_color="grey")
+    title = f'{team} - Interdependencia entre los jugadores: Temporada {game_type} {season}'
+    plt.title(title)
+    
+    #Declare columns and create a blank dataframe
+    cols = ['Team','Degree','Closeness','Eigen','Betweennes','Pagerank']
+    df_centrality = pd.DataFrame(columns=cols)
+
+    #Iterate through the different teams' networks
+    for i in unique_teams:
+        temp_G = networks[i]
+
+        #For the team, create dictionaries of what we want
+        team = {player:i for player in list(temp_G.nodes)}
+        degree = dict(nx.degree(temp_G))
+        closeness = {i:nx.closeness_centrality(temp_G, i)
+                     for i in temp_G.nodes}
+        betweenness = nx.betweenness_centrality(temp_G)
+        eigen = nx.eigenvector_centrality(temp_G)
+        page = nx.pagerank(temp_G, weight='weight')
+
+        #Create a dataframe
+        df_temp = pd.DataFrame([team,degree,closeness,eigen,betweenness,page]).T
+        df_temp.columns = cols
+
+        #Append it to our centrality dataframe
+        df_centrality = pd.concat([df_centrality, df_temp])
+        df_centrality = df_centrality.sort_values('Pagerank', ascending=False)
+        
+    return df_centrality
